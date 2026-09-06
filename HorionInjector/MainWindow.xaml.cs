@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -60,7 +61,8 @@ namespace HorionInjector
             }
             else
             {
-                CheckForUpdate();
+                // Do not automatically replace a source-built injector with a remote executable.
+                Console.WriteLine("[Security] Automatic self-update is disabled in this fork.");
             }
         }
 
@@ -116,17 +118,55 @@ namespace HorionInjector
                 }
             }
 
+            if (MessageBox.Show(
+                    "This will download Horion.dll from horion.download. The downloaded DLL is a separate binary and is not built from this injector repository. Continue?",
+                    "External DLL download",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            {
+                SetStatus("done");
+                return;
+            }
+
             SetStatus("downloading DLL");
             var wc = new WebClient();
             var file = Path.Combine(Path.GetTempPath(), "Horion.dll");
-            wc.DownloadFileCompleted += (_, __) => Inject(file);
+
+            wc.DownloadFileCompleted += (_, args) =>
+            {
+                if (args.Cancelled)
+                {
+                    MessageBox.Show("DLL download was cancelled.");
+                    SetStatus("done");
+                    return;
+                }
+
+                if (args.Error != null)
+                {
+                    MessageBox.Show("DLL download failed: " + args.Error.Message);
+                    SetStatus("done");
+                    return;
+                }
+
+                try
+                {
+                    Console.WriteLine("[Security] Downloaded Horion.dll SHA-256: " + ComputeSha256(file));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[Security] Could not calculate DLL SHA-256: " + ex.Message);
+                }
+
+                Inject(file);
+            };
+
             wc.DownloadFileAsync(new Uri("https://horion.download/bin/Horion.dll"), file);
         }
 
         private void InjectButton_Right(object sender, MouseButtonEventArgs e)
         {
             if (!_done) return;
-            
+
             SetStatus("selecting DLL");
             var diag = new OpenFileDialog
             {
@@ -135,9 +175,31 @@ namespace HorionInjector
             };
 
             if (diag.ShowDialog().GetValueOrDefault())
+            {
+                try
+                {
+                    Console.WriteLine("[Security] Selected DLL SHA-256: " + ComputeSha256(diag.FileName));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[Security] Could not calculate DLL SHA-256: " + ex.Message);
+                }
+
                 Inject(diag.FileName);
+            }
             else
+            {
                 SetStatus("done");
+            }
+        }
+
+        private static string ComputeSha256(string filePath)
+        {
+            using (var stream = File.OpenRead(filePath))
+            using (var sha256 = SHA256.Create())
+            {
+                return BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
+            }
         }
 
         private void ConsoleButton_Click(object sender, MouseButtonEventArgs e)
